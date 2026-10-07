@@ -102,6 +102,11 @@ public class GatewayRouteController {
     }
 
     private static GatewayRule toRule(RouteSaveVO.RuleVO vo) {
+        // 路径写法在入口统一：合并重复斜杠、去掉结尾斜杠（其它类型原样）。
+        if (vo != null && com.apigw.domain.route.RuleTypes.TYPE_PATH_PREFIX.equals(vo.type())) {
+            return GatewayRule.create(vo.stage(), vo.type(), vo.name(),
+                    com.apigw.proxy.match.PathNormalizer.normalize(vo.value()), vo.sortNo());
+        }
         return GatewayRule.create(vo.stage(), vo.type(), vo.name(), vo.value(), vo.sortNo());
     }
 

@@ -43,7 +43,9 @@ public class RouteExplainService {
     public Mono<RouteMatchExplanation.Explanation> explain(String path, String method,
                                                            Map<String, String> headers,
                                                            Map<String, String> query) {
-        MatchInput input = MatchInput.of(requirePath(path), requireMethod(method), headers, query);
+        // 排查入口先把路径口径统一（连续斜杠、结尾斜杠、编码斜杠），免得描述写法和线上真实写法对不上。
+        MatchInput input = MatchInput.of(com.apigw.proxy.match.PathNormalizer.normalize(requirePath(path)),
+                requireMethod(method), headers, query);
         return routeCatalog.snapshot()
                 .flatMap(snapshot -> routeStore.findAll().collectList()
                         // 全量只用来标注「谁没参与、为什么」；它一时读不到不影响主结论
