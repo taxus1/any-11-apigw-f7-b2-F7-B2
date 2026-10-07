@@ -4,6 +4,7 @@ import com.apigw.common.web.ClientIpResolver;
 import com.apigw.common.web.GatewayHeaders;
 import com.apigw.proxy.error.GatewayErrors;
 import com.apigw.proxy.error.UpstreamFailureKind;
+import com.apigw.proxy.match.PathNormalizer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.Ordered;
@@ -57,7 +58,9 @@ public class AppAuthWebFilter implements WebFilter, Ordered {
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
         String path = exchange.getRequest().getPath().pathWithinApplication().value();
-        if (isPassthrough(path)) {
+        // 边界按规范路径判：编码斜杠/重复斜杠（/api%2F..、//api/..）不能把本属管理面的请求
+        // 伪装成第三方流量送进凭据校验；与转发过滤器、限流器同一个 PathNormalizer 口径。
+        if (isPassthrough(PathNormalizer.normalize(path))) {
             // 管理接口/actuator 不属于第三方调用流量，不参与凭据校验
             return chain.filter(exchange);
         }

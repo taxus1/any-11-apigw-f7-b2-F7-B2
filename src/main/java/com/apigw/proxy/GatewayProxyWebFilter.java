@@ -15,6 +15,7 @@ import com.apigw.proxy.forward.UpstreamResponse;
 import com.apigw.proxy.gray.GrayReleaseSelector;
 import com.apigw.proxy.gray.GrayTarget;
 import com.apigw.proxy.match.RouteMatcher;
+import com.apigw.proxy.match.PathNormalizer;
 import com.apigw.proxy.resilience.ResilientForwarder;
 import com.apigw.proxy.route.RouteCatalog;
 import com.apigw.proxy.route.RouteSnapshot;
@@ -121,7 +122,9 @@ public class GatewayProxyWebFilter implements WebFilter, Ordered {
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
         String path = exchange.getRequest().getPath().pathWithinApplication().value();
-        if (isPassthrough(path)) {
+        // passthrough 边界按规范路径判：编码斜杠（/api%2F..）不能绕开「管理接口不走转发」这道线。
+        // path 原始串仍用于审计；转发给上游时用的是同一份规范路径（见下方 resolveTargetUri）。
+        if (isPassthrough(PathNormalizer.normalize(path))) {
             return chain.filter(exchange);
         }
 
@@ -202,10 +205,13 @@ public class GatewayProxyWebFilter implements WebFilter, Ordered {
                     String groupName = grayTarget != null ? grayTarget.groupName() : null;
 
                     outcome.set(new Outcome(route.getRouteNo(), targetUpstream, "FORWARDED", groupName));
+                    // 转发路径用规范形式：与「匹配依据的路径」逐字节一致，编码写法不会在上游
+                    // 被再解释出第二个去向；query 仍按原始串透传（在 resolveTargetUri 内部处理）。
+                    String canonicalPath = PathNormalizer.normalize(path);
                     URI targetUri = UpstreamForwarder.resolveTargetUri(
-                            targetUpstream, exchange.getRequest());
+                            targetUpstream, exchange.getRequest(), canonicalPath);
                     OutboundAuth outboundAuth = userAuth.outbound(
-                            traceId, exchange.getRequest(), identity);
+                            traceId, exchange.getRequest(), identity, canonicalPath);
 
                     // 韧性策略各路由独立：没配的一侧返回 null，对应能力完全不介入。
                     CircuitBreakerPolicy cbPolicy = route.circuitBreakerPolicy();

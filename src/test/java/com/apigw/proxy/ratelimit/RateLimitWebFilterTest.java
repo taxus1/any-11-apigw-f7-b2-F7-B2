@@ -187,6 +187,21 @@ class RateLimitWebFilterTest {
     }
 
     @Test
+    void encodedManagementPath_isNotRateLimited() {
+        // 边界按规范路径判：编码斜杠的 /api 写法仍是管理面，不能被当成第三方流量计入额度
+        loadQuota(RateQuota.reconstitute(RateLimitScope.APP, "app-1", null, 1, null, null, null));
+        Resp r = client.get().uri(java.net.URI.create(baseUrl + "/api%2Fgateway/rate-limits"))
+                .header(GatewayHeaders.APP_NO_HEADER, "app-1")
+                .exchangeToMono(resp -> resp.bodyToMono(String.class).defaultIfEmpty("").map(b -> new Resp(
+                        resp.statusCode().value(),
+                        resp.headers().asHttpHeaders().getFirst("X-Gateway-Error"),
+                        resp.headers().asHttpHeaders().getFirst("Retry-After"), b)))
+                .block(Duration.ofSeconds(5));
+        assertThat(r.status()).isEqualTo(200);
+        assertThat(store.calls.get()).isZero();
+    }
+
+    @Test
     void noAppHeader_passesThrough() {
         loadQuota(RateQuota.reconstitute(RateLimitScope.DEFAULT, "*", null, 1, null, null, null));
         assertThat(call("/order/1", null, null).status()).isEqualTo(200);

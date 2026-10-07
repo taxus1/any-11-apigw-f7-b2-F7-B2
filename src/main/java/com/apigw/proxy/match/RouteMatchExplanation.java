@@ -141,8 +141,12 @@ public final class RouteMatchExplanation {
     private static ConditionVerdict judgeCondition(GatewayRule c, MatchInput input, RouteMatcher matcher) {
         boolean matched = matcher.conditionMatches(c, input);
         String actual = actualOf(c, input);
+        // 期望值展示的必须是「实际参与比较的那个值」：路径前缀取规范形式，
+        // 避免库里存的旧写法（如 /order%2F）显示成一套、实际按另一套判。
+        String expected = RuleTypes.TYPE_PATH_PREFIX.equals(c.getType())
+                ? RouteMatcher.prefixOf(c) : c.getValue();
         return new ConditionVerdict(c.getSortNo() == null ? 0 : c.getSortNo(),
-                c.getType(), c.getName(), c.getValue(), actual, matched,
+                c.getType(), c.getName(), expected, actual, matched,
                 reasonOf(c, input, actual, matched));
     }
 
@@ -172,9 +176,10 @@ public final class RouteMatchExplanation {
     private static String reasonOf(GatewayRule c, MatchInput input, String actual, boolean matched) {
         switch (c.getType()) {
             case RuleTypes.TYPE_PATH_PREFIX -> {
+                String prefix = RouteMatcher.prefixOf(c);
                 return matched
-                        ? "路径 " + actual + " 落在前缀 " + c.getValue() + " 的边界内"
-                        : "路径 " + actual + " 不在前缀 " + c.getValue() + " 的边界内（注意段边界与尾斜杠语义）";
+                        ? "路径 " + actual + " 落在前缀 " + prefix + " 的边界内"
+                        : "路径 " + actual + " 不在前缀 " + prefix + " 的边界内（注意段边界与尾斜杠语义）";
             }
             case RuleTypes.TYPE_METHOD -> {
                 return matched

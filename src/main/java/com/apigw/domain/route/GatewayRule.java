@@ -132,5 +132,20 @@ public class GatewayRule {
             // 删头动作不需要取值
             this.value = null;
         }
+
+        if (RuleTypes.TYPE_PATH_PREFIX.equals(this.type)) {
+            // 前缀是绝对路径：必须以 / 开头；带 host、查询串、空白这些都不是「应用内路径前缀」，
+            // 在这里挡下，免得存进一条永远匹不中（或匹得莫名其妙）的规则。
+            // 尾斜杠是语义边界（/order/ = 仅子树），校验只查形状，绝不替它抹平。
+            String v = this.value;
+            if (v == null || !v.startsWith("/")) {
+                throw new BizException(label + "第 " + ordinal
+                        + " 条的路径前缀必须以 / 开头（应用内路径，不带 host 与查询串），收到的是：" + v);
+            }
+            if (v.contains("?") || v.contains("#") || v.indexOf(' ') >= 0) {
+                throw new BizException(label + "第 " + ordinal
+                        + " 条的路径前缀只能含路径部分，不要带查询串/片段/空白，收到的是：" + v);
+            }
+        }
     }
 }

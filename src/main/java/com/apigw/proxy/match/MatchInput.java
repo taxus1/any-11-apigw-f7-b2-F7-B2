@@ -16,6 +16,10 @@ import java.util.Map;
  * 两边最终都归一成这个结构再进 {@link RouteMatcher}，
  * 保证「排查接口算出来的结果」与「线上真实转发」逐字节一致，不存在两套判定。
  *
+ * 路径在两个构造入口都过同一遍 {@link PathNormalizer}（编码斜杠/点还原、重复斜杠合并、
+ * 穿越解析、尾斜杠保留）：这是「路径口径只有一份」的落点——真实请求与手工描述无论怎么写，
+ * 进到这里之后都是同一种规范形式，任何调用方都没法靠绕过工厂方法拿到第二套判定。
+ *
  * headers 用 {@link HttpHeaders} 装：它本身头名大小写不敏感，与线上取头口径相同；
  * queryParams 认的是 URL 查询串，与请求体无关。
  */
@@ -24,16 +28,16 @@ public record MatchInput(String path,
                          HttpHeaders headers,
                          MultiValueMap<String, String> queryParams) {
 
-    /** 转发链路入口：从真实请求提取（method 归一成大写名，空方法按空串）。 */
+    /** 转发链路入口：从真实请求提取（method 归一成大写名，空方法按空串；路径走统一归一）。 */
     public static MatchInput from(ServerHttpRequest request) {
         return new MatchInput(
-                request.getPath().pathWithinApplication().value(),
+                PathNormalizer.normalize(request.getPath().pathWithinApplication().value()),
                 request.getMethod() == null ? "" : request.getMethod().name(),
                 request.getHeaders(),
                 request.getQueryParams());
     }
 
-    /** 排查接口入口：从手工填的描述构造（头名大小写不敏感由 HttpHeaders 保证）。 */
+    /** 排查接口入口：从手工填的描述构造（路径走与真实转发同一遍归一；头名大小写不敏感由 HttpHeaders 保证）。 */
     public static MatchInput of(String path, String method,
                                 Map<String, String> headers, Map<String, String> query) {
         HttpHeaders hh = new HttpHeaders();
@@ -52,7 +56,8 @@ public record MatchInput(String path,
                 }
             });
         }
-        return new MatchInput(path, method == null ? "" : method, HttpHeaders.readOnlyHttpHeaders(hh), qp);
+        return new MatchInput(PathNormalizer.normalize(path),
+                method == null ? "" : method, HttpHeaders.readOnlyHttpHeaders(hh), qp);
     }
 
     /** 取某个头的第一个值（头名大小写不敏感），没有返回 null。 */

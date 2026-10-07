@@ -5,6 +5,7 @@ import com.apigw.common.web.GatewayHeaders;
 import com.apigw.proxy.auth.AppAuthWebFilter;
 import com.apigw.proxy.error.GatewayErrors;
 import com.apigw.proxy.error.UpstreamFailureKind;
+import com.apigw.proxy.match.PathNormalizer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.Ordered;
@@ -59,7 +60,8 @@ public class RateLimitWebFilter implements WebFilter, Ordered {
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
         String path = exchange.getRequest().getPath().pathWithinApplication().value();
-        if (isPassthrough(path)) {
+        // 与接入鉴权、转发过滤器同一个路径口径：编码/重复斜杠不能把管理面请求伪装进来绕过限流
+        if (isPassthrough(PathNormalizer.normalize(path))) {
             return chain.filter(exchange);
         }
 

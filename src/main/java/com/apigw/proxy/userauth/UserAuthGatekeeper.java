@@ -79,13 +79,17 @@ public class UserAuthGatekeeper {
     /**
      * 组装发往上游的身份上下文。通行标记把 traceId/方法/路径/身份和时间戳一起签进去，
      * 上游用共享密钥验得出「确实过了网关、且身份头没被换过」。
+     *
+     * 签进通行标记的路径是转发过滤器传入的<b>规范路径</b>：与实际转发给上游、
+     * 以及路由匹配依据的路径是同一个，上游验签时拿它收到的规范路径比对即可，
+     * 不会出现「签的是编码串、收到的是摊平串」而验不过。
      */
-    public OutboundAuth outbound(String traceId, ServerHttpRequest request, UserIdentity identity) {
+    public OutboundAuth outbound(String traceId, ServerHttpRequest request, UserIdentity identity,
+                                 String canonicalPath) {
         String pass = null;
         if (passSigner != null) {
             String method = request.getMethod() == null ? "" : request.getMethod().name();
-            String path = request.getPath().pathWithinApplication().value();
-            pass = passSigner.sign(System.currentTimeMillis(), traceId, method, path,
+            pass = passSigner.sign(System.currentTimeMillis(), traceId, method, canonicalPath,
                     identity == null ? "" : identity.userId(),
                     identity == null ? "" : identity.tenantId());
         }

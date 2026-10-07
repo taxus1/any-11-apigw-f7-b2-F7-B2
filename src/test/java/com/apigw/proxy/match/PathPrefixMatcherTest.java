@@ -74,4 +74,26 @@ class PathPrefixMatcherTest {
         assertFalse(PathPrefixMatcher.matches("", "/order"));
         assertFalse(PathPrefixMatcher.matches("/order", null));
     }
+
+    // ---- 尾斜杠边界在「规则」侧也不能被写法抹平（保存口径回归） ----
+
+    @Test
+    void trailingSlashRule_neverEquivalentToNonTrailingSlashRule() {
+        // 同一条请求 /order：无尾斜杠规则收（精确路径），有尾斜杠规则不收（仅子树）
+        assertTrue(PathPrefixMatcher.matches("/order", "/order"));
+        assertFalse(PathPrefixMatcher.matches("/order/", "/order"));
+        // /order/ 反过来：两条都收子树请求，但有尾斜杠规则不额外收精确路径
+        assertTrue(PathPrefixMatcher.matches("/order", "/order/"));
+        assertTrue(PathPrefixMatcher.matches("/order/", "/order/"));
+    }
+
+    @Test
+    void slashRule_boundaryAgainstSiblingSegments() {
+        // 段边界红线：任何「只是字符串前缀像」的兄弟段都不能进来，两种规则写法都一样
+        for (String rule : new String[]{"/order", "/order/"}) {
+            assertFalse(PathPrefixMatcher.matches(rule, "/ordering"));
+            assertFalse(PathPrefixMatcher.matches(rule, "/order-x"));
+            assertFalse(PathPrefixMatcher.matches(rule, "/orders/1"));
+        }
+    }
 }

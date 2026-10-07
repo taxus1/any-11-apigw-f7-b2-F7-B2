@@ -265,6 +265,24 @@ class AppAuthWebFilterTest {
     }
 
     @Test
+    void encodedOrSlashedManagementPath_isStillNotSubjectToAuth() {
+        // passthrough 边界按规范路径判：编码斜杠/重复斜杠不能把管理面请求伪装成第三方流量
+        // （若按原始串判，这些请求会因「没带凭据」被 401 挡在管理接口外，甚至绕入转发匹配）
+        Result encoded = client.get().uri(java.net.URI.create(baseUrl + "/api%2Fgateway/apps"))
+                .exchangeToMono(resp -> resp.bodyToMono(String.class).defaultIfEmpty("")
+                        .map(b -> new Result(resp.statusCode().value(),
+                                resp.headers().asHttpHeaders().getFirst("X-Gateway-Error"), b))).block();
+        assertThat(encoded.status()).isEqualTo(200);
+
+        // 用原始 URI 避免 WebClient 客户端侧先把 // 归一；服务端必须自己按规范路径守住边界
+        Result doubled = client.get().uri(java.net.URI.create(baseUrl + "//api/gateway/apps"))
+                .exchangeToMono(resp -> resp.bodyToMono(String.class).defaultIfEmpty("")
+                        .map(b -> new Result(resp.statusCode().value(),
+                                resp.headers().asHttpHeaders().getFirst("X-Gateway-Error"), b))).block();
+        assertThat(doubled.status()).isEqualTo(200);
+    }
+
+    @Test
     void acceptedRequest_overwritesAppNoHeaderWithTrustedValue() {
         createApp("app-1", SECRET, null, 1);
         Result r = authed("/order/1", "app-1");

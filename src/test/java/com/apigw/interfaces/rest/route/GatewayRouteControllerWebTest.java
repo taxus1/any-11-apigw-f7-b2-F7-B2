@@ -96,6 +96,60 @@ class GatewayRouteControllerWebTest {
     }
 
     @Test
+    void create_pathPrefix_trailingSlash_isPreservedNotStripped() {
+        // 事故回归：配的是「仅子树」/order/，保存回来必须还是 /order/——
+        // 尾斜杠一旦被抹平，/order 这一层就会被错误放进来。
+        when(store.create(any())).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+
+        web.post().uri("/api/gateway/routes")
+                .bodyValue(body("order-ts", "订单", "http://order-svc:8080", null,
+                        List.of(rule("PATH_PREFIX", null, "/order/", 1)),
+                        List.of()))
+                .exchange().expectBody()
+                .jsonPath("$.code").isEqualTo(0)
+                .jsonPath("$.data.conditions[0].value").isEqualTo("/order/");
+
+        // 无尾斜杠（精确路径+子树）同样原样回来，两种写法不被抹平成同一个
+        web.post().uri("/api/gateway/routes")
+                .bodyValue(body("order-exact", "订单", "http://order-svc:8080", null,
+                        List.of(rule("PATH_PREFIX", null, "/order", 1)),
+                        List.of()))
+                .exchange().expectBody()
+                .jsonPath("$.data.conditions[0].value").isEqualTo("/order");
+
+        // 写法归一但边界不动：重复斜杠合并、编码斜杠还原，唯独尾斜杠保留
+        web.post().uri("/api/gateway/routes")
+                .bodyValue(body("order-norm", "订单", "http://order-svc:8080", null,
+                        List.of(rule("PATH_PREFIX", null, "/order%2Fabc//", 1)),
+                        List.of()))
+                .exchange().expectBody()
+                .jsonPath("$.data.conditions[0].value").isEqualTo("/order/abc/");
+    }
+
+    @Test
+    void create_pathPrefix_mustBeAbsolutePath() {
+        // 前缀必须是应用内绝对路径：不带 / 的相对写法在碰 Redis 之前就拦下
+        web.post().uri("/api/gateway/routes")
+                .bodyValue(body("order-rel", "n", "http://h:8080", null,
+                        List.of(rule("PATH_PREFIX", null, "order/abc", 1)), List.of()))
+                .exchange().expectBody()
+                .jsonPath("$.code").isEqualTo(1)
+                .jsonPath("$.msg").value(v ->
+                        org.assertj.core.api.Assertions.assertThat(v.toString())
+                                .contains("路径前缀必须以 / 开头"));
+
+        // 查询串/空白不是路径前缀的一部分
+        web.post().uri("/api/gateway/routes")
+                .bodyValue(body("order-q", "n", "http://h:8080", null,
+                        List.of(rule("PATH_PREFIX", null, "/order?x=1", 1)), List.of()))
+                .exchange().expectBody()
+                .jsonPath("$.code").isEqualTo(1)
+                .jsonPath("$.msg").value(v ->
+                        org.assertj.core.api.Assertions.assertThat(v.toString())
+                                .contains("只能含路径部分"));
+    }
+
+    @Test
     void create_duplicateSortNo_rejectedBeforeTouchingStore() {
         web.post().uri("/api/gateway/routes")
                 .bodyValue(body("sort-01", "n", "http://h:8080", null,

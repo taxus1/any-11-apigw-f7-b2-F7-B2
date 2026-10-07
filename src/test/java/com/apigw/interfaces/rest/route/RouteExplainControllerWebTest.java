@@ -184,6 +184,69 @@ class RouteExplainControllerWebTest {
     }
 
     @Test
+    void explain_encodedSlash_agreesWithRealForwarding() {
+        // 事故回归：前端把斜杠编码成 %2F 时，排查说命中、真实转发却 404。
+        // 现在两边同一份口径：/order%2Fabc 必须和 /order/abc 一样命中 /order/ 子树规则。
+        GatewayRoute r = route("order", 1, List.of(path("/order/", 1)));
+        stubSnapshot(List.of(r), List.of(r));
+
+        for (String encoded : List.of("/order%2Fabc", "/order%2fabc", "/order//abc", "/order/abc/")) {
+            web.post().uri("/api/gateway/routes/_explain")
+                    .bodyValue(explainBody(encoded, "GET", null, null))
+                    .exchange().expectBody()
+                    .jsonPath("$.code").isEqualTo(0)
+                    .jsonPath("$.data.matched").isEqualTo(true)
+                    .jsonPath("$.data.routeNo").isEqualTo("order");
+        }
+
+        // /order 精确层不在「仅子树」规则内；编码出来的目录斜杠 /order%2F 则落在子树内
+        web.post().uri("/api/gateway/routes/_explain")
+                .bodyValue(explainBody("/order", "GET", null, null))
+                .exchange().expectBody().jsonPath("$.data.matched").isEqualTo(false);
+        web.post().uri("/api/gateway/routes/_explain")
+                .bodyValue(explainBody("/order%2F", "GET", null, null))
+                .exchange().expectBody().jsonPath("$.data.matched").isEqualTo(true);
+    }
+
+    @Test
+    void explain_encodedTraversal_cannotBypassBoundary() {
+        // 安全红线：编码穿越写法不能骗过排查口子得到一个与线上不同的「命中」结论
+        GatewayRoute r = route("order", 1, List.of(path("/order/", 1)));
+        stubSnapshot(List.of(r), List.of(r));
+
+        for (String attack : List.of(
+                "/order%2F..%2Fadmin", "/order/../admin", "/order/%2e%2e/admin",
+                "//order//%2f..%2fadmin")) {
+            web.post().uri("/api/gateway/routes/_explain")
+                    .bodyValue(explainBody(attack, "GET", null, null))
+                    .exchange().expectBody()
+                    .jsonPath("$.data.matched").isEqualTo(false)
+                    .jsonPath("$.data.routeNo").doesNotExist();
+        }
+
+        // 段边界：字符串像的兄弟路径，编码与否都不进来
+        for (String lookalike : List.of("/ordering", "/order-x", "/orders/1")) {
+            web.post().uri("/api/gateway/routes/_explain")
+                    .bodyValue(explainBody(lookalike, "GET", null, null))
+                    .exchange().expectBody().jsonPath("$.data.matched").isEqualTo(false);
+        }
+    }
+
+    @Test
+    void explain_displaysCanonicalPathAndPrefix_soEchoMatchesDecision() {
+        // 回显的「实际值/期望值」必须是实际参与比较的规范形式，避免显示一套、判定另一套
+        GatewayRoute r = route("order", 1, List.of(path("/order/", 1)));
+        stubSnapshot(List.of(r), List.of(r));
+
+        web.post().uri("/api/gateway/routes/_explain")
+                .bodyValue(explainBody("/order%2Fabc", "GET", null, null))
+                .exchange().expectBody()
+                .jsonPath("$.data.request.path").isEqualTo("/order/abc")
+                .jsonPath("$.data.routes[0].conditions[0].actual").isEqualTo("/order/abc")
+                .jsonPath("$.data.routes[0].conditions[0].expected").isEqualTo("/order/");
+    }
+
+    @Test
     void explain_badDescription_rejected() {
         stubSnapshot(List.of(), List.of());
 

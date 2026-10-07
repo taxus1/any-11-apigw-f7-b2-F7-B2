@@ -222,6 +222,82 @@ class GatewayProxyFilterTest {
     }
 
     @Test
+    void encodedSlash_matchesSameRouteAsPlainSlash_andForwardsCanonicalPath() {
+        // 事故回归：前端把斜杠编码成 %2F 后真实转发 404、排查却说命中。
+        // 现在匹配按规范路径判，编码请求与明文请求落到同一条路由；
+        // 发给上游的也是网关判定时依据的规范路径（/order/abc），上下游对路径只有一种解释，
+        // 编码写法不可能在上游被再解码出第二个去向。
+        loadRoutes(route("order", upstream.baseUrl(),
+                List.of(cond("PATH_PREFIX", null, "/order/", 1)), List.of()));
+
+        var resp = client.get()
+                .uri(java.net.URI.create(baseUrl + "/order%2Fabc"))
+                .retrieve().bodyToMono(String.class).block();
+        assertThat(resp).contains("\"path\":\"/order/abc\"");
+        assertThat(upstream.lastExchange().getRequestURI().getPath()).isEqualTo("/order/abc");
+        assertThat(upstream.hitCount()).isEqualTo(1);
+
+        // 小写 hex + 查询串：路径摊平、查询串原样透传
+        client.get().uri(java.net.URI.create(baseUrl + "/order%2fabc?x=1"))
+                .retrieve().bodyToMono(String.class).block();
+        assertThat(upstream.lastExchange().getRequestURI().getPath()).isEqualTo("/order/abc");
+        assertThat(upstream.lastExchange().getRequestURI().getRawQuery()).isEqualTo("x=1");
+    }
+
+    @Test
+    void encodedTraversal_cannotReachOrderRoute() {
+        // 安全红线：编码写法不能绕开路由边界。/order 子树规则绝不该收到穿越到 /admin 的请求。
+        loadRoutes(route("order", upstream.baseUrl(),
+                List.of(cond("PATH_PREFIX", null, "/order/", 1)), List.of()));
+
+        for (String attack : List.of(
+                "/order%2F..%2Fadmin",
+                "/order/../admin",
+                "/order/%2e%2e/admin")) {
+            var resp = client.get().uri(java.net.URI.create(baseUrl + attack)).exchange().block();
+            assertThat(resp.statusCode())
+                    .as("编码穿越 %s 不得命中 /order/ 子树", attack)
+                    .isEqualTo(HttpStatus.NOT_FOUND);
+            assertThat(resp.headers().asHttpHeaders().getFirst("X-Gateway-Error")).isEqualTo("NO_ROUTE");
+            resp.releaseBody().block();
+        }
+        // 一次都不该打上游：被边界挡在网关
+        assertThat(upstream.hitCount()).isZero();
+    }
+
+    @Test
+    void repeatedAndTrailingSlashWritings_routeDeterministically() {
+        loadRoutes(route("order", upstream.baseUrl(),
+                List.of(cond("PATH_PREFIX", null, "/order/", 1)), List.of()));
+
+        // 重复斜杠只是写法，按同一个路径段判，命中；转发出去也是合并后的规范路径
+        client.get().uri(baseUrl + "/order//abc").retrieve().bodyToMono(String.class).block();
+        assertThat(upstream.lastExchange().getRequestURI().getPath()).isEqualTo("/order/abc");
+
+        // 目录自身带斜杠命中；精确层不带斜杠不命中（边界不丢）
+        client.get().uri(baseUrl + "/order/").retrieve().bodyToMono(String.class).block();
+        assertThat(upstream.lastExchange().getRequestURI().getPath()).isEqualTo("/order/");
+
+        var exact = client.get().uri(baseUrl + "/order").exchange().block();
+        assertThat(exact.statusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        exact.releaseBody().block();
+    }
+
+    @Test
+    void encodedManagementPath_isNotProxiedIntoForwarding() {
+        // passthrough 边界也认规范路径：编码/重复斜杠不能把管理面请求塞进转发匹配
+        // （若按原始串判，/api%2F.. 不会以 /api 开头，就会被当成转发流量）
+        loadRoutes(route("api", upstream.baseUrl(),
+                List.of(cond("PATH_PREFIX", null, "/api/", 1)), List.of()));
+
+        // /api 开头的编码写法仍属管理面，交给链尾占位处理器（200），不打上游
+        var encoded = client.get().uri(java.net.URI.create(baseUrl + "/api%2Fgateway/routes")).exchange().block();
+        assertThat(encoded.statusCode()).isEqualTo(HttpStatus.OK);
+        encoded.releaseBody().block();
+        assertThat(upstream.hitCount()).isZero();
+    }
+
+    @Test
     void multipleMatches_areOrderedStably() {
         FakeUpstream upstream2;
         try {

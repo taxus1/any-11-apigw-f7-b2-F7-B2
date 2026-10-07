@@ -78,7 +78,9 @@ public class RouteMatcher {
     boolean conditionMatches(GatewayRule c, MatchInput input) {
         switch (c.getType()) {
             case RuleTypes.TYPE_PATH_PREFIX -> {
-                return PathPrefixMatcher.matches(c.getValue(), input.path());
+                // 规则前缀也走唯一口径：库里存的旧写法（编码斜杠/重复斜杠/穿越段）与请求路径
+                // 用同一个 PathNormalizer 收敛后再比；尾斜杠作为语义边界被保留。
+                return PathPrefixMatcher.matches(prefixOf(c), input.path());
             }
             case RuleTypes.TYPE_METHOD -> {
                 // 方法名是大小写不敏感的 token
@@ -100,12 +102,21 @@ public class RouteMatcher {
         }
     }
 
+    /**
+     * 前缀的规范形式：路径条件判定/展示/定序都以它为准，不直接读 {@code getValue()}。
+     * 包内可见，排查解释器展示「期望值」时也取这里，保证解释里看到的前缀就是实际参与比较的前缀。
+     */
+    static String prefixOf(GatewayRule c) {
+        return PathNormalizer.normalize(c.getValue());
+    }
+
     /** 取路由上路径前缀条件的前缀长度（多条时取最长）；没有路径条件返回 0。 */
     static int pathPrefixLength(GatewayRoute route) {
         int len = 0;
         for (GatewayRule c : route.getConditions()) {
             if (RuleTypes.TYPE_PATH_PREFIX.equals(c.getType()) && c.getValue() != null) {
-                len = Math.max(len, c.getValue().length());
+                // 用规范形式量长度：库里旧写法多长不该影响「谁更具体」的定序
+                len = Math.max(len, prefixOf(c).length());
             }
         }
         return len;

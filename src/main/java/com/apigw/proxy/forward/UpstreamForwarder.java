@@ -198,9 +198,16 @@ public class UpstreamForwarder {
     }
 
     /**
-     * 拼上游目标地址：上游 base（scheme://host:port）+ 原始请求路径（含原始 query）。
+     * 拼上游目标地址：上游 base（scheme://host:port）+ 路径（含原始 query）。
+     *
+     * <p>路径用调用方显式给出的 {@code canonicalPath}（即 {@code PathNormalizer} 的产物，
+     * 也是路由匹配实际依据的那个路径），而不是请求里的原始编码串。理由是路由边界安全：
+     * 若上游收到的还是 {@code /order%2F..%2Fadmin} 这种写法，而网关按解码摊平后的路径
+     * 定了路由，后端再自行解码一次就可能把同一请求解释到别的资源，网关与上游各看一条路径。
+     * 统一转发规范路径后，「网关按哪条路径放行，上游就收到哪条路径」，中间没有第二种解释；
+     * 查询串不属于路径，原样透传。
      */
-    public static URI resolveTargetUri(String upstreamBase, ServerHttpRequest request) {
+    public static URI resolveTargetUri(String upstreamBase, ServerHttpRequest request, String canonicalPath) {
         URI base = URI.create(upstreamBase);
         StringBuilder sb = new StringBuilder();
         sb.append(base.getScheme()).append("://").append(base.getRawAuthority());
@@ -208,7 +215,7 @@ public class UpstreamForwarder {
         if (basePath != null && !basePath.isBlank() && !"/".equals(basePath)) {
             sb.append(basePath);
         }
-        sb.append(request.getPath().pathWithinApplication().value());
+        sb.append(canonicalPath);
         if (request.getURI().getRawQuery() != null) {
             sb.append('?').append(request.getURI().getRawQuery());
         }

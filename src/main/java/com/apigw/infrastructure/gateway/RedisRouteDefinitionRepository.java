@@ -103,9 +103,12 @@ public class RedisRouteDefinitionRepository implements RouteDefinitionRepository
     private PredicateDefinition toPredicate(GatewayRule rule) {
         switch (rule.getType()) {
             case RuleTypes.TYPE_PATH_PREFIX ->
-                    // 「前缀」语义要翻译成 PathPattern 的 ** 通配：/order/ 与 /order 都匹配 /order 及其任意子路径。
-                    // 直接把 /order/ 交给 SCG 的 Path 断言，只会按路径段精确匹配，/order/abc 是匹配不上的。
-                    { return new PredicateDefinition("Path=" + toPrefixPattern(rule.getValue())); }
+                    // 「前缀」翻译成 PathPattern 的 ** 通配：/order 配成 /order/**。
+                    // 注意：PathPattern 表达不出「仅子树」语义（/order/** 同时也覆盖 /order 本身），
+                    // 真正的转发匹配以 GatewayProxyWebFilter + PathPrefixMatcher 为唯一权威，
+                    // 尾斜杠边界（/order/ 不收 /order）在那里守住；这里只给 SCG 装载用，取规范前缀。
+                    { return new PredicateDefinition("Path="
+                            + toPrefixPattern(com.apigw.proxy.match.PathNormalizer.normalize(rule.getValue()))); }
             case RuleTypes.TYPE_METHOD ->
                     { return new PredicateDefinition("Method=" + rule.getValue().toUpperCase(Locale.ROOT)); }
             case RuleTypes.TYPE_HEADER -> {
@@ -118,7 +121,11 @@ public class RedisRouteDefinitionRepository implements RouteDefinitionRepository
         }
     }
 
-    /** 把「路径前缀」归一成 PathPattern：去掉尾斜杠后统一追加 /**；已经是通配的保持原样。 */
+    /**
+     * 把规范后的「路径前缀」归一成 PathPattern：去尾斜杠后统一追加 /**；已经是通配的保持原样。
+     * 入参已过 PathNormalizer（编码斜杠/穿越段已摊平），这里只做通配翻译。
+     * 尾斜杠区分语义的权威在转发匹配链路，本翻译表达不出「仅子树」，见 toPredicate 说明。
+     */
     static String toPrefixPattern(String prefix) {
         if (prefix == null || prefix.isBlank()) {
             throw new IllegalStateException("路径前缀不能为空");
@@ -127,6 +134,7 @@ public class RedisRouteDefinitionRepository implements RouteDefinitionRepository
         if (p.contains("*")) {
             return p;
         }
+        // 仅做通配翻译需要的尾斜杠去除；不改变存储值，也不参与转发边界判定
         while (p.endsWith("/") && p.length() > 1) {
             p = p.substring(0, p.length() - 1);
         }
