@@ -135,6 +135,11 @@ class GatewayProxyFilterTest {
         catalog.refresh().block();
     }
 
+    /** 构造保留百分号编码的请求 URI（WebClient 对裸字符串会再编码，必须给 URI 对象）。 */
+    private java.net.URI rawUri(String rawPathAndQuery) {
+        return java.net.URI.create(baseUrl).resolve(rawPathAndQuery);
+    }
+
     // ---- 用例 ----
 
     @Test
@@ -219,6 +224,64 @@ class GatewayProxyFilterTest {
         assertThat(lookalike.statusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(lookalike.headers().asHttpHeaders().getFirst("X-Gateway-Error")).isEqualTo("NO_ROUTE");
         lookalike.releaseBody().block();
+    }
+
+    @Test
+    void encodedSlash_hitsSameRouteAsPlainWriting_andUpstreamReceivesRawPath() {
+        // 事故 1：/order%2Fabc 真实打进来曾回 404，但排查说命中。两边口径统一后必须命中，
+        // 且发给上游的仍是原始（编码）路径——网关只在判定时归一，不改写资源路径
+        loadRoutes(route("order", upstream.baseUrl(),
+                List.of(cond("PATH_PREFIX", null, "/order/", 1)), List.of()));
+
+        String body = client.get().uri(rawUri("/order%2Fabc")).retrieve().bodyToMono(String.class).block();
+        assertThat(body).contains("\"path\":\"/order/abc\"");
+        // JDK HttpExchange 的 getPath() 会解码，但请求行里的原始（编码）字节在 getRawPath()
+        assertThat(upstream.lastExchange().getRequestURI().getRawPath()).isEqualTo("/order%2Fabc");
+
+        // 大写 %2f 等价；带查询串时查询串不参与路径判定
+        String body2 = client.get().uri(rawUri("/order%2fabc?from=cart"))
+                .retrieve().bodyToMono(String.class).block();
+        assertThat(body2).contains("\"query\":\"from=cart\"");
+        assertThat(upstream.lastExchange().getRequestURI().getRawPath()).isEqualTo("/order%2fabc");
+    }
+
+    @Test
+    void encodedTraversal_cannotEscapePrefixBoundary_onRealWire() {
+        // 安全红线：/order%2F..%2Fadmin 归一后是 /admin，绝不被 /order/ 子树收下
+        loadRoutes(route("order", upstream.baseUrl(),
+                List.of(cond("PATH_PREFIX", null, "/order/", 1)), List.of()));
+
+        var escaped = client.get().uri(rawUri("/order%2F..%2Fadmin")).exchange().block();
+        assertThat(escaped.statusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(escaped.headers().asHttpHeaders().getFirst("X-Gateway-Error")).isEqualTo("NO_ROUTE");
+        escaped.releaseBody().block();
+
+        // 配了 /admin 前缀时，穿越写法落到它该去的 admin 路由，而不是 order
+        loadRoutes(
+                route("order", upstream.baseUrl(),
+                        List.of(cond("PATH_PREFIX", null, "/order/", 1)), List.of()),
+                route("admin", upstream.baseUrl(),
+                        List.of(cond("PATH_PREFIX", null, "/admin", 1)), List.of()));
+        String body = client.get().uri(rawUri("/order%2F..%2Fadmin")).retrieve().bodyToMono(String.class).block();
+        assertThat(body).contains("\"path\":\"/order/../admin\"");
+        assertThat(upstream.lastExchange().getRequestURI().getRawPath())
+                .isEqualTo("/order%2F..%2Fadmin");
+    }
+
+    @Test
+    void duplicateAndTrailingSlashes_followSameCanonicalVerdict() {
+        loadRoutes(route("order", upstream.baseUrl(),
+                List.of(cond("PATH_PREFIX", null, "/order/", 1)), List.of()));
+
+        // 重复斜杠合并：/order//abc 命中 /order/ 子树，上游收到原始路径
+        String dup = client.get().uri(rawUri("/order//abc")).retrieve().bodyToMono(String.class).block();
+        assertThat(dup).contains("\"path\":\"/order//abc\"");
+
+        // 结尾斜杠：/order/ 命中（子树根），/order 不命中（不是它的「下面」）
+        assertThat(client.get().uri(rawUri("/order/")).retrieve().bodyToMono(String.class).block()).isNotBlank();
+        var exact = client.get().uri(rawUri("/order")).exchange().block();
+        assertThat(exact.statusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        exact.releaseBody().block();
     }
 
     @Test

@@ -96,6 +96,67 @@ class GatewayRouteControllerWebTest {
     }
 
     @Test
+    void pathPrefix_trailingSlash_isPreserved_andWritingCanonicalized() {
+        when(store.create(any())).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+
+        // 事故 2：/order/ 保存后尾斜杠不能丢——它承载「仅子树」语义
+        web.post().uri("/api/gateway/routes")
+                .bodyValue(body("ts-01", "n", "http://h:8080", null,
+                        List.of(rule("PATH_PREFIX", null, "/order/", 1)), List.of()))
+                .exchange().expectBody()
+                .jsonPath("$.code").isEqualTo(0)
+                .jsonPath("$.data.conditions[0].value").isEqualTo("/order/");
+
+        // 不带尾斜杠的也原样回来（两种语义并存，不能互相抹平）
+        web.post().uri("/api/gateway/routes")
+                .bodyValue(body("ts-02", "n", "http://h:8080", null,
+                        List.of(rule("PATH_PREFIX", null, "/order", 1)), List.of()))
+                .exchange().expectBody()
+                .jsonPath("$.data.conditions[0].value").isEqualTo("/order");
+
+        // 重复斜杠、编码斜杠按唯一口径收敛，但尾斜杠仍保留
+        web.post().uri("/api/gateway/routes")
+                .bodyValue(body("ts-03", "n", "http://h:8080", null,
+                        List.of(rule("PATH_PREFIX", null, "/order//abc%2F", 1)), List.of()))
+                .exchange().expectBody()
+                .jsonPath("$.data.conditions[0].value").isEqualTo("/order/abc/");
+    }
+
+    @Test
+    void pathPrefix_illegalWriting_rejected() {
+        // 不以 / 开头
+        web.post().uri("/api/gateway/routes")
+                .bodyValue(body("pp-01", "n", "http://h:8080", null,
+                        List.of(rule("PATH_PREFIX", null, "order/", 1)), List.of()))
+                .exchange().expectBody()
+                .jsonPath("$.code").isEqualTo(1)
+                .jsonPath("$.msg").value(v -> org.assertj.core.api.Assertions.assertThat(v.toString())
+                        .contains("路径前缀不合法").contains("以 / 开头"));
+
+        // 混进查询串
+        web.post().uri("/api/gateway/routes")
+                .bodyValue(body("pp-02", "n", "http://h:8080", null,
+                        List.of(rule("PATH_PREFIX", null, "/order?x=1", 1)), List.of()))
+                .exchange().expectBody()
+                .jsonPath("$.msg").value(v -> org.assertj.core.api.Assertions.assertThat(v.toString())
+                        .contains("不能带查询串"));
+
+        // 含 .. 段（含编码写法，不能靠编码绕开校验）
+        web.post().uri("/api/gateway/routes")
+                .bodyValue(body("pp-03", "n", "http://h:8080", null,
+                        List.of(rule("PATH_PREFIX", null, "/a/../b", 1)), List.of()))
+                .exchange().expectBody()
+                .jsonPath("$.msg").value(v -> org.assertj.core.api.Assertions.assertThat(v.toString())
+                        .contains(".."));
+        web.post().uri("/api/gateway/routes")
+                .bodyValue(body("pp-04", "n", "http://h:8080", null,
+                        List.of(rule("PATH_PREFIX", null, "/a/%2e%2e/b", 1)), List.of()))
+                .exchange().expectBody()
+                .jsonPath("$.msg").value(v -> org.assertj.core.api.Assertions.assertThat(v.toString())
+                        .contains(".."));
+    }
+
+    @Test
     void create_duplicateSortNo_rejectedBeforeTouchingStore() {
         web.post().uri("/api/gateway/routes")
                 .bodyValue(body("sort-01", "n", "http://h:8080", null,

@@ -103,9 +103,11 @@ public class RedisRouteDefinitionRepository implements RouteDefinitionRepository
     private PredicateDefinition toPredicate(GatewayRule rule) {
         switch (rule.getType()) {
             case RuleTypes.TYPE_PATH_PREFIX ->
-                    // 「前缀」语义要翻译成 PathPattern 的 ** 通配：/order/ 与 /order 都匹配 /order 及其任意子路径。
-                    // 直接把 /order/ 交给 SCG 的 Path 断言，只会按路径段精确匹配，/order/abc 是匹配不上的。
-                    { return new PredicateDefinition("Path=" + toPrefixPattern(rule.getValue())); }
+                    // 「前缀」语义翻译成 PathPattern 的 ** 通配。尾斜杠区分必须与
+                    // PathPrefixMatcher 完全一致（这里不允许出现第二份语义）：
+                    // /order/（带尾斜杠）= 仅子树 → /order/**；
+                    // /order（不带尾斜杠）= 精确 + 子树 → /order,/order/**。
+                    { return new PredicateDefinition("Path=" + toPrefixPatterns(rule.getValue())); }
             case RuleTypes.TYPE_METHOD ->
                     { return new PredicateDefinition("Method=" + rule.getValue().toUpperCase(Locale.ROOT)); }
             case RuleTypes.TYPE_HEADER -> {
@@ -118,8 +120,18 @@ public class RedisRouteDefinitionRepository implements RouteDefinitionRepository
         }
     }
 
-    /** 把「路径前缀」归一成 PathPattern：去掉尾斜杠后统一追加 /**；已经是通配的保持原样。 */
-    static String toPrefixPattern(String prefix) {
+    /**
+     * 把「路径前缀」翻译成 SCG Path 断言用的 pattern 列表（逗号分隔的多值），语义与
+     * {@link com.apigw.proxy.match.PathPrefixMatcher} 一一对应：
+     * <ul>
+     *   <li>结尾带斜杠（仅子树）：{@code /order/} → {@code /order/**}（不含 {@code /order} 自身）；</li>
+     *   <li>结尾不带斜杠（精确 + 子树）：{@code /order} → {@code /order,/order/**}
+     *       （{@code /ordering}、{@code /order-x} 这种段边界不符的，两个 pattern 都不匹配）；</li>
+     *   <li>根 {@code /} → {@code /**}；已含通配符的原样保留。</li>
+     * </ul>
+     * 正常转发流量由 GatewayProxyWebFilter 按同一份口径短路处理，这里只是 SCG 装载侧的翻译。
+     */
+    static String toPrefixPatterns(String prefix) {
         if (prefix == null || prefix.isBlank()) {
             throw new IllegalStateException("路径前缀不能为空");
         }
@@ -127,13 +139,14 @@ public class RedisRouteDefinitionRepository implements RouteDefinitionRepository
         if (p.contains("*")) {
             return p;
         }
-        while (p.endsWith("/") && p.length() > 1) {
-            p = p.substring(0, p.length() - 1);
-        }
-        if (p.equals("/")) {
+        if ("/".equals(p)) {
             return "/**";
         }
-        return p + "/**";
+        if (p.endsWith("/")) {
+            // 结尾斜杠承载「仅子树」语义，保留到前缀串上，绝不截掉
+            return p + "**";
+        }
+        return p + "," + p + "/**";
     }
 
     private FilterDefinition toFilter(GatewayRule rule) {

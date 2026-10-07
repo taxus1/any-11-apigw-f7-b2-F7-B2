@@ -27,7 +27,9 @@ public record MatchInput(String path,
     /** 转发链路入口：从真实请求提取（method 归一成大写名，空方法按空串）。 */
     public static MatchInput from(ServerHttpRequest request) {
         return new MatchInput(
-                request.getPath().pathWithinApplication().value(),
+                // 路径口径与排查口子完全一致：原始（含百分号编码）路径先统一归一，
+                // 编码斜杠/连续斜杠/点段在这里收敛，不能让线上用原始路径、排查用归一路径
+                PathNormalizer.normalize(request.getPath().pathWithinApplication().value()),
                 request.getMethod() == null ? "" : request.getMethod().name(),
                 request.getHeaders(),
                 request.getQueryParams());
@@ -36,6 +38,8 @@ public record MatchInput(String path,
     /** 排查接口入口：从手工填的描述构造（头名大小写不敏感由 HttpHeaders 保证）。 */
     public static MatchInput of(String path, String method,
                                 Map<String, String> headers, Map<String, String> query) {
+        // 与转发链路同一个入口归一：排查写 /order%2Fabc 与线上真实收到该写法，结论逐字节一致
+        String normalizedPath = PathNormalizer.normalize(path);
         HttpHeaders hh = new HttpHeaders();
         if (headers != null) {
             headers.forEach((k, v) -> {
@@ -52,7 +56,8 @@ public record MatchInput(String path,
                 }
             });
         }
-        return new MatchInput(path, method == null ? "" : method, HttpHeaders.readOnlyHttpHeaders(hh), qp);
+        return new MatchInput(normalizedPath, method == null ? "" : method,
+                HttpHeaders.readOnlyHttpHeaders(hh), qp);
     }
 
     /** 取某个头的第一个值（头名大小写不敏感），没有返回 null。 */

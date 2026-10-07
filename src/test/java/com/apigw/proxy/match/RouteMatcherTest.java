@@ -26,6 +26,20 @@ class RouteMatcherTest {
         return MockServerHttpRequest.method(method, uri).build();
     }
 
+    /**
+     * 构造「线上真实报文」的请求：URI 字符串里带 % 转义时，
+     * MockServerHttpRequest.get(String) 会把 % 再编码一遍（%2F→%252F），
+     * 与真实 Netty 收到的单重编码不符；传 URI 对象才保留原始字节。
+     */
+    private MockServerHttpRequest rawGet(String rawPathAndQuery) {
+        try {
+            return MockServerHttpRequest.method(org.springframework.http.HttpMethod.GET,
+                    new java.net.URI("http://localhost" + rawPathAndQuery)).build();
+        } catch (java.net.URISyntaxException e) {
+            throw new IllegalArgumentException(e);
+        }
+    }
+
     private GatewayRoute route(String no, String upstream, List<GatewayRule> conditions) {
         GatewayRoute r = GatewayRoute.create(no, no, upstream, 1, null);
         r.replaceRules(conditions, List.of());
@@ -157,6 +171,91 @@ class RouteMatcherTest {
         GatewayRoute r = route("r", "http://h:1", List.of(path("/order/", 1)));
         assertNull(matcher.match(List.of(r), request("GET", "/other")));
         assertNull(matcher.match(List.of(), request("GET", "/order/x")));
+    }
+
+    @Test
+    void encodedSlashInRealRequest_matchesSameAsPlainWriting() {
+        // 线上事故点：/order%2Fabc 真实打进来，必须与 /order/abc 命中同一条（不能 404）
+        GatewayRoute r = route("r", "http://h:1", List.of(path("/order/", 1)));
+
+        var encoded = rawGet("/order%2Fabc");
+        assertEquals("r", matcher.match(List.of(r), encoded).getRouteNo());
+
+        var plain = request("GET", "/order/abc");
+        assertEquals("r", matcher.match(List.of(r), plain).getRouteNo());
+
+        // 重复斜杠、点段写法同样按归一口径命中
+        assertEquals("r", matcher.match(List.of(r),
+                MockServerHttpRequest.get("/order//abc").build()).getRouteNo());
+        assertEquals("r", matcher.match(List.of(r),
+                MockServerHttpRequest.get("/order/./abc").build()).getRouteNo());
+    }
+
+    @Test
+    void encodedTraversal_cannotEscapePrefixBoundary() {
+        // 安全红线：编码点段不能把请求带出 /order/ 子树
+        GatewayRoute order = route("order", "http://h:1", List.of(path("/order/", 1)));
+        GatewayRoute admin = route("admin", "http://h:2", List.of(path("/admin", 1)));
+
+        // /order%2F..%2Fadmin 归一后是 /admin：只能落在 admin，order 边界没被穿越
+        GatewayRoute hit = matcher.match(List.of(order, admin),
+                rawGet("/order%2F..%2Fadmin"));
+        assertEquals("admin", hit.getRouteNo());
+
+        // 只有 /order 规则时它不该被收下（归一后是 /admin，不在子树内）
+        assertNull(matcher.match(List.of(order),
+                rawGet("/order%2F..%2Fadmin")));
+        // /order%2F..%2Fadmin/x → /admin/x，同样落到 admin 子树
+        assertEquals("admin", matcher.match(List.of(order, admin),
+                rawGet("/order%2F..%2Fadmin%2Fx")).getRouteNo());
+    }
+
+    @Test
+    void trailingSlashBoundary_holdsUnderCanonicalInput() {
+        // /order/ 规则：/order 这一层不放行，结尾斜杠写法放行
+        GatewayRoute subtree = route("r", "http://h:1", List.of(path("/order/", 1)));
+        assertNull(matcher.match(List.of(subtree), MockServerHttpRequest.get("/order").build()));
+        assertEquals("r", matcher.match(List.of(subtree),
+                MockServerHttpRequest.get("/order/").build()).getRouteNo());
+
+        // /order 规则（精确 + 子树）：两层都放行，但字符串像的 /ordering、/order-x 不放
+        GatewayRoute exact = route("e", "http://h:1", List.of(path("/order", 1)));
+        assertEquals("e", matcher.match(List.of(exact), MockServerHttpRequest.get("/order").build()).getRouteNo());
+        assertEquals("e", matcher.match(List.of(exact), MockServerHttpRequest.get("/order/abc").build()).getRouteNo());
+        assertNull(matcher.match(List.of(exact), MockServerHttpRequest.get("/ordering").build()));
+        assertNull(matcher.match(List.of(exact), MockServerHttpRequest.get("/order-x").build()));
+    }
+
+    @Test
+    void forwardingAndExplainInputs_giveIdenticalVerdict() {
+        // 同一异常写法，从真实请求构造与从排查描述构造，必须是同一份结论
+        GatewayRoute r = route("r", "http://h:1",
+                List.of(path("/order/", 1), method("GET", 2)));
+        List<GatewayRoute> routes = List.of(r);
+
+        for (String raw : List.of(
+                "/order%2Fabc", "/order/abc", "/order//abc", "/order/abc/", "/order",
+                "/order%2f..%2fadmin")) {
+            // 线上：真实报文（URI 对象保留单重 % 编码）；排查：运营把同样的写法填进 path
+            MatchInput viaForwarding = MatchInput.from(rawGet(raw));
+            MatchInput viaExplain = MatchInput.of(raw, "GET", null, null);
+            assertEquals(viaForwarding.path(), viaExplain.path(),
+                    "排查与转发对 " + raw + " 的归一路径不一致");
+            GatewayRoute a = matcher.match(routes, viaForwarding);
+            GatewayRoute b = matcher.match(routes, viaExplain);
+            assertEquals(a == null ? null : a.getRouteNo(), b == null ? null : b.getRouteNo(),
+                    "排查与转发对 " + raw + " 的命中路由不一致");
+        }
+    }
+
+    @Test
+    void queryString_isNotPartOfPathMatching() {
+        // ? 及之后归查询串，路径判定只看前面那段；编码在查询串里的斜杠不影响路径
+        GatewayRoute r = route("r", "http://h:1", List.of(path("/order/", 1)));
+        assertEquals("r", matcher.match(List.of(r),
+                rawGet("/order/abc?redirect=" + "%2Fadmin")).getRouteNo());
+        assertEquals("r", matcher.match(List.of(r),
+                rawGet("/order%2Fabc?from=cart")).getRouteNo());
     }
 
     @Test

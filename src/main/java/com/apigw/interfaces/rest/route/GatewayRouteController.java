@@ -102,10 +102,17 @@ public class GatewayRouteController {
     }
 
     private static GatewayRule toRule(RouteSaveVO.RuleVO vo) {
-        // 路径写法在入口统一：合并重复斜杠、去掉结尾斜杠（其它类型原样）。
         if (vo != null && com.apigw.domain.route.RuleTypes.TYPE_PATH_PREFIX.equals(vo.type())) {
-            return GatewayRule.create(vo.stage(), vo.type(), vo.name(),
-                    com.apigw.proxy.match.PathNormalizer.normalize(vo.value()), vo.sortNo());
+            // 前缀写法在入口按唯一口径收敛（编码斜杠/连续斜杠/点段），但结尾斜杠必须原样保留：
+            // /order/（仅子树）与 /order（精确 + 子树）是两种语义，保存不能把它抹平。
+            String canonical;
+            try {
+                canonical = com.apigw.proxy.match.PathNormalizer.canonicalizePrefix(vo.value());
+            } catch (IllegalArgumentException e) {
+                throw new com.apigw.common.exception.BizException(
+                        "匹配条件的路径前缀不合法：" + e.getMessage());
+            }
+            return GatewayRule.create(vo.stage(), vo.type(), vo.name(), canonical, vo.sortNo());
         }
         return GatewayRule.create(vo.stage(), vo.type(), vo.name(), vo.value(), vo.sortNo());
     }

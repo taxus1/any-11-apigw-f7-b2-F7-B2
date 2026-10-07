@@ -184,6 +184,65 @@ class RouteExplainControllerWebTest {
     }
 
     @Test
+    void explain_encodedSlash_givesSameVerdictAsRealForwarding() {
+        // 事故 1：排查口子填 /order%2Fabc 必须和线上真实收到该写法一致——命中
+        GatewayRoute r = route("order", 1, List.of(path("/order/", 1)));
+        stubSnapshot(List.of(r), List.of(r));
+
+        web.post().uri("/api/gateway/routes/_explain")
+                .bodyValue(explainBody("/order%2Fabc", "GET", null, null))
+                .exchange().expectBody()
+                .jsonPath("$.code").isEqualTo(0)
+                .jsonPath("$.data.matched").isEqualTo(true)
+                .jsonPath("$.data.routeNo").isEqualTo("order")
+                // 回显的是归一后的路径，排查者能直接看到口径
+                .jsonPath("$.data.request.path").isEqualTo("/order/abc");
+
+        // 大写 %2f、重复斜杠同理
+        web.post().uri("/api/gateway/routes/_explain")
+                .bodyValue(explainBody("/order//abc", "GET", null, null))
+                .exchange().expectBody()
+                .jsonPath("$.data.matched").isEqualTo(true);
+    }
+
+    @Test
+    void explain_encodedTraversal_doesNotLeapAcrossBoundary() {
+        // 安全红线：/order%2F..%2Fadmin 归一成 /admin，不被 /order/ 收下
+        GatewayRoute order = route("order", 1, List.of(path("/order/", 1)));
+        stubSnapshot(List.of(order), List.of(order));
+
+        web.post().uri("/api/gateway/routes/_explain")
+                .bodyValue(explainBody("/order%2F..%2Fadmin", "GET", null, null))
+                .exchange().expectBody()
+                .jsonPath("$.data.matched").isEqualTo(false)
+                .jsonPath("$.data.request.path").isEqualTo("/admin");
+    }
+
+    @Test
+    void explain_trailingSlashBoundaryDistinctionHolds() {
+        // /order/ 规则：/order 这一层不命中，/order/、/order/abc 命中
+        GatewayRoute subtree = route("order", 1, List.of(path("/order/", 1)));
+        stubSnapshot(List.of(subtree), List.of(subtree));
+
+        web.post().uri("/api/gateway/routes/_explain")
+                .bodyValue(explainBody("/order", "GET", null, null))
+                .exchange().expectBody()
+                .jsonPath("$.data.matched").isEqualTo(false);
+        web.post().uri("/api/gateway/routes/_explain")
+                .bodyValue(explainBody("/order/", "GET", null, null))
+                .exchange().expectBody()
+                .jsonPath("$.data.matched").isEqualTo(true);
+
+        // /ordering、/order-x 这种字符串像的，任何写法都不进
+        for (String lookalike : List.of("/ordering", "/order-x", "/order%2Dx", "/order%69ng")) {
+            web.post().uri("/api/gateway/routes/_explain")
+                    .bodyValue(explainBody(lookalike, "GET", null, null))
+                    .exchange().expectBody()
+                    .jsonPath("$.data.matched").isEqualTo(false);
+        }
+    }
+
+    @Test
     void explain_badDescription_rejected() {
         stubSnapshot(List.of(), List.of());
 
